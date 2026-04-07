@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Real-Time Monitoring Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
+  .header { background: #161b22; padding: 16px 24px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { font-size: 20px; color: #58a6ff; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #f85149; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
+  .grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; padding: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .card-title { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .card-value { font-size: 28px; font-weight: 700; }
+  .good { color: #3fb950; } .warning { color: #d29922; } .critical { color: #f85149; }
+  .card-sub { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .bar-container { margin-top: 10px; background: #21262d; border-radius: 4px; height: 6px; overflow: hidden; }
+  .bar { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 24px 24px; }
+  .chart-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+  .alerts { padding: 0 24px 24px; }
+  .alert-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .alert-item { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #21262d; }
+  .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.critical { background: #3d1515; color: #f85149; }
+  .badge.warning { background: #3d2a00; color: #d29922; }
+  .no-alerts { color: #3fb950; font-size: 14px; padding: 8px 0; }
+  .services { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; padding: 0 24px 24px; }
+  .svc { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; text-align: center; }
+  .svc-name { font-size: 12px; color: #8b949e; margin-bottom: 6px; }
+  .svc-status { font-size: 13px; font-weight: 600; }
+  .svc-status.healthy{color:#3fb950} .svc-status.degraded{color:#d29922} .svc-status.down{color:#f85149}
+  .section-title { padding: 0 24px 12px; font-size: 14px; font-weight: 600; color: #8b949e; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>⚡ Real-Time Monitoring Dashboard</h1>
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <span id="ws-status">Connecting...</span>
+    <span style="color:#8b949e;margin-left:16px" id="last-update"></span>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-title">CPU Usage</div>
+    <div class="card-value" id="cpu">--</div>
+    <div class="card-sub">System CPU</div>
+    <div class="bar-container"><div class="bar" id="cpu-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Memory Usage</div>
+    <div class="card-value" id="mem">--</div>
+    <div class="card-sub" id="mem-sub">-- / -- MB</div>
+    <div class="bar-container"><div class="bar" id="mem-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Requests / sec</div>
+    <div class="card-value good" id="rps">--</div>
+    <div class="card-sub" id="conn">-- active connections</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Error Rate</div>
+    <div class="card-value" id="err">--</div>
+    <div class="card-sub" id="rt">Avg response: -- ms</div>
+  </div>
+</div>
+
+<div class="section-title">Service Health</div>
+<div class="services" id="services"></div>
+
+<div class="charts">
+  <div class="chart-card">
+    <div class="chart-title">CPU % — Last 60s</div>
+    <canvas id="cpu-chart" height="120"></canvas>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Memory % — Last 60s</div>
+    <canvas id="mem-chart" height="120"></canvas>
+  </div>
+</div>
+
+<div class="alerts">
+  <div class="alert-card">
+    <div class="chart-title">🚨 Active Alerts <span id="alert-count" style="color:#8b949e;font-weight:400"></span></div>
+    <div id="alerts-list"><div class="no-alerts">✅ All systems normal</div></div>
+  </div>
+</div>
+
+<script>
+const cpuD=[], memD=[], MAX=60;
+function cls(v,w,c){return v>=c?'critical':v>=w?'warning':'good'}
+function drawChart(id, data, color){
+  const c=document.getElementById(id), ctx=c.getContext('2d');
+  const w=c.offsetWidth, h=c.offsetHeight; c.width=w; c.height=h;
+  ctx.clearRect(0,0,w,h); if(data.length<2)return;
+  const step=w/(MAX-1);
+  ctx.beginPath(); ctx.strokeStyle=color; ctx.lineWidth=2;
+  data.forEach((v,i)=>{const x=i*step,y=h-(v/100)*h; i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});
+  ctx.stroke();
+  ctx.lineTo((data.length-1)*step,h); ctx.lineTo(0,h); ctx.closePath();
+  ctx.fillStyle=color+'22'; ctx.fill();
+}
+
+function update(d){
+  const m=d.data;
+  const cc=cls(m.cpu_percent,70,90), mc=cls(m.memory_percent,75,90), ec=cls(m.error_rate,5,15);
+  document.getElementById('cpu').textContent=m.cpu_percent.toFixed(1)+'%';
+  document.getElementById('cpu').className='card-value '+cc;
+  document.getElementById('cpu-bar').style.cssText=`width:${m.cpu_percent}%;background:${cc==='critical'?'#f85149':cc==='warning'?'#d29922':'#3fb950'}`;
+  document.getElementById('mem').textContent=m.memory_percent.toFixed(1)+'%';
+  document.getElementById('mem').className='card-value '+mc;
+  document.getElementById('mem-bar').style.cssText=`width:${m.memory_percent}%;background:${mc==='critical'?'#f85149':mc==='warning'?'#d29922':'#3fb950'}`;
+  document.getElementById('mem-sub').textContent=m.memory_used_mb.toFixed(0)+' / '+m.memory_total_mb+' MB';
+  document.getElementById('rps').textContent=m.requests_per_second.toFixed(0);
+  document.getElementById('conn').textContent=m.active_connections+' active connections';
+  document.getElementById('err').textContent=m.error_rate.toFixed(2)+'%';
+  document.getElementById('err').className='card-value '+ec;
+  document.getElementById('rt').textContent='Avg response: '+m.avg_response_time_ms.toFixed(0)+' ms';
+  document.getElementById('last-update').textContent='Updated: '+new Date().toLocaleTimeString();
+  cpuD.push(m.cpu_percent); memD.push(m.memory_percent);
+  if(cpuD.length>MAX)cpuD.shift(); if(memD.length>MAX)memD.shift();
+  drawChart('cpu-chart',cpuD,'#58a6ff'); drawChart('mem-chart',memD,'#3fb950');
+  document.getElementById('alert-count').textContent='('+d.active_alerts+')';
+  const al=document.getElementById('alerts-list');
+  al.innerHTML=d.alert_details.length===0?'<div class="no-alerts">✅ All systems normal</div>':
+    d.alert_details.map(a=>`<div class="alert-item"><span class="badge ${a.severity}">${a.severity.toUpperCase()}</span><span>${a.message}</span></div>`).join('');
+}
+
+fetch('/api/services/health').then(r=>r.json()).then(svcs=>{
+  document.getElementById('services').innerHTML=svcs.map(s=>
+    `<div class="svc"><div class="svc-name">${s.name}</div><div class="svc-status ${s.status}">${s.status.toUpperCase()}</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${s.response_time_ms}ms</div></div>`
+  ).join('');
+});
+
+function connect(){
+  const ws=new WebSocket(`ws://${location.host}/ws/metrics`);
+  ws.onopen=()=>{document.getElementById('dot').style.background='#3fb950';document.getElementById('ws-status').textContent='Live';};
+  ws.onmessage=e=>update(JSON.parse(e.data));
+  ws.onclose=()=>{document.getElementById('dot').style.background='#f85149';document.getElementById('ws-status').textContent='Reconnecting...';setTimeout(connect,3000);};
+}
+connect();
+</script>
+</body>
+</html>
